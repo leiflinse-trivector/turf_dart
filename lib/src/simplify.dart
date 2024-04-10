@@ -1,5 +1,5 @@
 import 'package:turf/helpers.dart';
-import 'package:turf/turf.dart';
+import 'package:turf/src/meta/geom.dart';
 
 /*
  (c) 2013, Vladimir Agafonkin
@@ -41,7 +41,7 @@ num _getSqSegDist(Position p, Position p1, Position p2) {
 // rest of the code doesn't care about point format
 
 /// basic distance-based simplification
-List<Position> _simplifyRadialDist(List<Position> points, double sqTolerance) {
+List<Position> _simplifyRadialDist(List<Position> points, num sqTolerance) {
   var prevPoint = points[0], newPoints = [prevPoint];
   late Position point;
 
@@ -60,7 +60,7 @@ List<Position> _simplifyRadialDist(List<Position> points, double sqTolerance) {
 }
 
 List<Position> _simplifyDPStep(List<Position> points, int first, int last,
-    double sqTolerance, List<Position> simplified) {
+    num sqTolerance, List<Position> simplified) {
   num maxSqDist = sqTolerance;
   late int index;
 
@@ -99,27 +99,56 @@ List<Position> _simplifyDouglasPeucker(List<Position> points, sqTolerance) {
   return simplified;
 }
 
-/// Simplify a LineString feature using dart port of simplify.js high-performance JS polyline simplification library.
-///
 /// both algorithms combined for awesome performance
-Feature<LineString> simplify(
-  Feature<LineString> points, {
-  double tolerance = 1,
-  bool highestQuality = false,
-}) {
-  var coords = getCoords(points);
-  if (coords.length <= 2) return points;
-  if (coords is! List<Position>) return points;
-
-  final sqTolerance = tolerance * tolerance;
-
+List<Position> _simplify(
+    List<Position> coords, bool highestQuality, num sqTolerance) {
   coords = highestQuality ? coords : _simplifyRadialDist(coords, sqTolerance);
   coords = _simplifyDouglasPeucker(coords, sqTolerance);
+  return coords;
+}
 
-  return Feature<LineString>(
-    id: points.id,
-    geometry: LineString(coordinates: coords),
-    properties: points.properties,
-    bbox: points.bbox,
-  );
+/// Simplify geometries using dart port of simplify.js high-performance JS polyline simplification library.
+///
+/// LineString, MultiLineString, Polygon and MultiPolygon features in [geoJSON] will be simplified. Points
+/// and other non-supported geometries are left unprocessed.
+///
+/// If [mutate] is true, [geoJSON] will be edited in place.
+GeoJSONObject simplify(
+  GeoJSONObject geoJSON, {
+  num tolerance = 1,
+  bool highestQuality = false,
+  bool mutate = false,
+}) {
+  final sqTolerance = tolerance * tolerance;
+
+  // Clone to avoid side effects
+  if (mutate == false) geoJSON = geoJSON.clone();
+
+  // Simplify geoJSON geometry in place
+  geomEach(geoJSON, (currentGeometry, _, __, ___, ____) {
+    if (currentGeometry is LineString) {
+      final coords = currentGeometry.coordinates;
+      final simplifiedCoords = _simplify(coords, highestQuality, sqTolerance);
+      coords.replaceRange(0, coords.length, simplifiedCoords);
+    } else if (currentGeometry is MultiLineString) {
+      for (var coords in currentGeometry.coordinates) {
+        final simplifiedCoords = _simplify(coords, highestQuality, sqTolerance);
+        coords.replaceRange(0, coords.length, simplifiedCoords);
+      }
+    } else if (currentGeometry is Polygon) {
+      for (var coords in currentGeometry.coordinates) {
+        final simplifiedCoords = _simplify(coords, highestQuality, sqTolerance);
+        coords.replaceRange(0, coords.length, simplifiedCoords);
+      }
+    } else if (currentGeometry is MultiPolygon) {
+      for (var poly in currentGeometry.coordinates) {
+        for (var coords in poly) {
+          final simplifiedCoords =
+              _simplify(coords, highestQuality, sqTolerance);
+          coords.replaceRange(0, coords.length, simplifiedCoords);
+        }
+      }
+    }
+  });
+  return geoJSON;
 }
